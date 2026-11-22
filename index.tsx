@@ -22,7 +22,7 @@ const MediaEngineActions = findByPropsLazy("toggleSelfMute");
 const settings = definePluginSettings({
     keepMicMuted: {
         type: OptionType.BOOLEAN,
-        description: "Keep my microphone muted — while you look deafened you can't talk (you only hear), and unmuting ends it. Turn this off to keep your mic working while fake-deafened.",
+        description: "Keep my microphone muted. While you look deafened you can't talk (you only hear), and unmuting ends it. Fake Mute is locked while this is on. Turn this off to keep your mic working while fake-deafened.",
         default: true,
     },
     fakeDeafen: {
@@ -108,7 +108,8 @@ function toggleFakeDeafen() {
     settings.store.fakeDeafen = !settings.store.fakeDeafen;
 
     if (settings.store.fakeDeafen) {
-        // turning fake deafen ON
+        // turning fake deafen ON: the real mute replaces any fake mute
+        if (settings.store.keepMicMuted) settings.store.fakeMute = false;
         if (settings.store.keepMicMuted && !isReallyMuted()) {
             setRealMute(true);
             autoMuted = true;
@@ -124,7 +125,13 @@ function toggleFakeDeafen() {
     refreshVoiceState();
 }
 
+// Fake Mute is pointless while fake deafen is really muting your mic.
+function fakeMuteLocked(): boolean {
+    return settings.store.fakeDeafen && settings.store.keepMicMuted;
+}
+
 function toggleFakeMute() {
+    if (fakeMuteLocked()) return;
     settings.store.fakeMute = !settings.store.fakeMute;
     refreshVoiceState();
 }
@@ -237,7 +244,7 @@ export default definePlugin({
                     id="vc-fake-mute"
                     label="Fake Mute"
                     checked={settings.store.fakeMute}
-                    disabled={!isInVoiceChannel()}
+                    disabled={!isInVoiceChannel() || fakeMuteLocked()}
                     action={toggleFakeMute}
                 />
             );
@@ -273,7 +280,8 @@ export default definePlugin({
         if (!isSelf) return {};
 
         const extra: Record<string, any> = {
-            className: "vc-fd-self" + (fakeDeafen ? " vc-fd-deaf" : "") + (fakeMute ? " vc-fd-mute" : "")
+            // mute icon is only blue when the mic is actually live; a real mute stays red
+            className: "vc-fd-self" + (fakeDeafen ? " vc-fd-deaf" : "") + (fakeMute && !isReallyMuted() ? " vc-fd-mute" : "")
         };
         if (fakeDeafen) extra.deaf = true;
         if (fakeMute) extra.mute = true;
@@ -288,6 +296,7 @@ export default definePlugin({
         document.addEventListener("click", onIconClick, true);
 
         mediaStore = findByProps("isDeaf", "isMute");
+        if (fakeMuteLocked()) settings.store.fakeMute = false; // clear stale state
 
         const socket = getSocket();
         if (!socket) {
