@@ -3,7 +3,7 @@
  *
  * - "Fake Deafen" / "Fake Mute" switches in the voice device popout (the ˄ menu
  *   above the mic / deafen buttons).
- * - Settings: "Keep my microphone muted" — while fake-deafened, also really mute
+ * - Settings: "Keep my microphone muted": while fake-deafened, also really mute
  *   your mic so you can't talk (you can only hear). Unmuting ends the fake.
  *
  * Mechanism: wraps the gateway socket's send(). Voice-state updates go out as
@@ -15,7 +15,7 @@
 import { definePluginSettings } from "@api/Settings";
 import definePlugin, { OptionType } from "@utils/types";
 import { findByProps, findByPropsLazy } from "@webpack";
-import { Menu, React } from "@webpack/common";
+import { Menu, React, UserStore } from "@webpack/common";
 
 const MediaEngineActions = findByPropsLazy("toggleSelfMute");
 
@@ -37,14 +37,27 @@ const settings = definePluginSettings({
         default: false,
         hidden: true,
     },
+    autoMuted: {
+        type: OptionType.BOOLEAN,
+        description: "Internal: mic was muted by Keep my microphone muted",
+        default: false,
+        hidden: true,
+    },
+    unmuteOnUndeafen: {
+        type: OptionType.BOOLEAN,
+        description: "Internal: give the mic back on undeafen",
+        default: false,
+        hidden: true,
+    },
 });
 
 let originalSend: ((op: number, data: any, ...args: any[]) => any) | undefined;
 let mediaStore: any;
 let prevDeaf = false;
 let prevMute = false;
-let autoMuted = false; // did WE real-mute the mic for keepMicMuted?
-let unmuteOnUndeafen = false; // fake -> real deafen while auto-muted: give the mic back on undeafen
+// Saved in settings so they survive a Discord reload/restart:
+// settings.store.autoMuted = did WE real-mute the mic for keepMicMuted?
+// settings.store.unmuteOnUndeafen = fake -> real deafen while auto-muted: give the mic back on undeafen
 
 function getSocket() {
     try {
@@ -112,17 +125,18 @@ function toggleFakeDeafen() {
         if (settings.store.keepMicMuted) settings.store.fakeMute = false;
         if (settings.store.keepMicMuted && !isReallyMuted()) {
             setRealMute(true);
-            autoMuted = true;
+            settings.store.autoMuted = true;
         }
     } else {
-        // turning fake deafen OFF — undo our auto-mute
-        if (autoMuted) {
+        // turning fake deafen OFF: undo our auto-mute
+        if (settings.store.autoMuted) {
             setRealMute(false);
-            autoMuted = false;
+            settings.store.autoMuted = false;
         }
     }
 
     refreshVoiceState();
+    updateTileStyle();
 }
 
 // Fake Mute is pointless while fake deafen is really muting your mic.
@@ -134,6 +148,7 @@ function toggleFakeMute() {
     if (fakeMuteLocked()) return;
     settings.store.fakeMute = !settings.store.fakeMute;
     refreshVoiceState();
+    updateTileStyle();
 }
 
 // React to the user's REAL deafen/mute button.
@@ -145,14 +160,14 @@ function onMediaChange() {
         // Actually deafening/muting for real turns off the matching fake.
         if (d && !prevDeaf && settings.store.fakeDeafen) {
             settings.store.fakeDeafen = false;
-            if (autoMuted) unmuteOnUndeafen = true;
-            autoMuted = false;
+            if (settings.store.autoMuted) settings.store.unmuteOnUndeafen = true;
+            settings.store.autoMuted = false;
             refreshVoiceState();
         }
 
         // Undeafening after a fake -> real switch: undo the mute we added.
-        if (!d && prevDeaf && unmuteOnUndeafen) {
-            unmuteOnUndeafen = false;
+        if (!d && prevDeaf && settings.store.unmuteOnUndeafen) {
+            settings.store.unmuteOnUndeafen = false;
             prevDeaf = d;
             prevMute = m;
             setRealMute(false);
@@ -166,12 +181,13 @@ function onMediaChange() {
         // keepMicMuted: manually unmuting ends fake deafen.
         if (!m && prevMute && settings.store.fakeDeafen && settings.store.keepMicMuted) {
             settings.store.fakeDeafen = false;
-            autoMuted = false;
+            settings.store.autoMuted = false;
             refreshVoiceState();
         }
 
         prevDeaf = d;
         prevMute = m;
+        updateTileStyle();
     } catch (e) {
         console.error("[FakeDeafen] onMediaChange failed:", e);
     }
@@ -195,11 +211,40 @@ const CSS = `
 `;
 
 let styleEl: HTMLStyleElement | undefined;
+let tileStyleEl: HTMLStyleElement | undefined;
 
-// Clicking an icon on your own row: blue (fake) -> real (red); red (real) -> off.
+function myId(): string | undefined {
+    try {
+        return UserStore.getCurrentUser()?.id;
+    } catch {
+        return undefined;
+    }
+}
+
+function selfTileSelector(): string | null {
+    const id = myId();
+    return id ? `[data-selenium-video-tile="${id}"]` : null;
+}
+
+// Your tile in the call view: same colors as your channel row. Rebuilt whenever
+// the fake or real state changes.
+function updateTileStyle() {
+    if (!tileStyleEl) return;
+    const tile = selfTileSelector();
+    if (!tile) { tileStyleEl.textContent = ""; return; }
+
+    // the tile's name chip ignores clicks (pointer-events: none), so re-enable them on the icons
+    let css = `${tile} svg:has(${DEAF_PATH}), ${tile} svg:has(${MUTE_PATH}) { color: ${REAL_COLOR} !important; cursor: pointer; pointer-events: auto !important; }\n`;
+    if (settings.store.fakeDeafen) css += `${tile} svg:has(${DEAF_PATH}) { color: ${FAKE_COLOR} !important; }\n`;
+    if (settings.store.fakeMute && !isReallyMuted()) css += `${tile} svg:has(${MUTE_PATH}) { color: ${FAKE_COLOR} !important; }\n`;
+    tileStyleEl.textContent = css;
+}
+
+// Clicking an icon on your own row or tile: blue (fake) -> real (red); red (real) -> off.
 function onIconClick(e: MouseEvent) {
     const target = e.target as Element | null;
-    const row = target?.closest?.(".vc-fd-self");
+    const tile = selfTileSelector();
+    const row = target?.closest?.(".vc-fd-self") ?? (tile ? target?.closest?.(tile) : null);
     if (!row) return;
     const svg = target!.closest("svg");
     if (!svg) return;
@@ -267,11 +312,29 @@ export default definePlugin({
                 match: /(\i)=\{user:(\i),speaking:/,
                 replace: "$1={className:$self.rowClass(arguments[0]),user:$2,speaking:"
             }
+        },
+        {
+            // call view tile name chip
+            find: "isStreamInfoOverlayEnabled),",
+            replacement: {
+                match: /muted:(\i)\?\.isVoiceMuted\(\)\?\?!1,deafened:(\i)\?\.isVoiceDeafened\(\)\?\?!1/,
+                replace: "muted:$self.tileState($1,!1),deafened:$self.tileState($2,!0)"
+            }
         }
     ],
 
     rowClass(props: any) {
         return props?.className;
+    },
+
+    // Call view tile: report the fake state for your own tile only.
+    tileState(voiceState: any, deaf: boolean) {
+        const real = (deaf ? voiceState?.isVoiceDeafened?.() : voiceState?.isVoiceMuted?.()) ?? false;
+        if (voiceState?.userId && voiceState.userId === myId()) {
+            if (deaf && settings.store.fakeDeafen) return true;
+            if (!deaf && settings.store.fakeMute) return true;
+        }
+        return real;
     },
 
     // Called during the row's render. Returns extra props for YOUR row only.
@@ -297,6 +360,11 @@ export default definePlugin({
 
         mediaStore = findByProps("isDeaf", "isMute");
         if (fakeMuteLocked()) settings.store.fakeMute = false; // clear stale state
+
+        tileStyleEl = document.createElement("style");
+        tileStyleEl.id = "vc-fakedeafen-tile-style";
+        document.head.appendChild(tileStyleEl);
+        updateTileStyle();
 
         const socket = getSocket();
         if (!socket) {
@@ -330,6 +398,8 @@ export default definePlugin({
 
         styleEl?.remove();
         styleEl = undefined;
+        tileStyleEl?.remove();
+        tileStyleEl = undefined;
         document.removeEventListener("click", onIconClick, true);
     }
 });
