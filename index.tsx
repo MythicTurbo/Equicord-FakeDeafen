@@ -117,7 +117,48 @@ function refreshVoiceState() {
     }
 }
 
+let switchingFromReal = false; // ignore our own undeafen while handing over to the fake
+
+// Fake deafen turned on while really deafened: undeafen for real first, then fake it.
+function switchRealToFakeDeafen() {
+    // if the mic is muted because of an earlier fake deafen, that mute is still ours
+    const muteIsOurs = settings.store.unmuteOnUndeafen;
+    settings.store.fakeDeafen = true;
+    settings.store.unmuteOnUndeafen = false;
+    if (settings.store.keepMicMuted) settings.store.fakeMute = false;
+
+    switchingFromReal = true;
+    try {
+        MediaEngineActions.toggleSelfDeaf(); // real undeafen
+    } catch (e) {
+        console.error("[FakeDeafen] real undeafen failed:", e);
+    }
+
+    setTimeout(() => {
+        switchingFromReal = false;
+        prevDeaf = !!mediaStore?.isDeaf?.();
+        prevMute = isReallyMuted();
+        if (settings.store.keepMicMuted) {
+            if (!isReallyMuted()) {
+                setRealMute(true);
+                settings.store.autoMuted = true;
+            } else if (muteIsOurs) {
+                settings.store.autoMuted = true;
+            }
+        } else if (muteIsOurs && isReallyMuted()) {
+            setRealMute(false); // setting is off now: give the mic back
+        }
+        refreshVoiceState();
+        updateTileStyle();
+    }, 200);
+}
+
 function toggleFakeDeafen() {
+    if (!settings.store.fakeDeafen && mediaStore?.isDeaf?.()) {
+        switchRealToFakeDeafen();
+        return;
+    }
+
     settings.store.fakeDeafen = !settings.store.fakeDeafen;
 
     if (settings.store.fakeDeafen) {
@@ -153,6 +194,7 @@ function toggleFakeMute() {
 
 // React to the user's REAL deafen/mute button.
 function onMediaChange() {
+    if (switchingFromReal) return;
     try {
         const d = !!mediaStore?.isDeaf?.();
         const m = !!mediaStore?.isMute?.();

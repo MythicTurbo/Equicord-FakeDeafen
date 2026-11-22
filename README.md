@@ -10,6 +10,7 @@ Look deafened or muted to everyone else in a voice call while you can still hear
   - **red** icon = real
 - **Click a blue icon** (in the list or on your call tile) to turn it into the real thing (it goes red). Click a red icon to turn it off
 - If you press the real deafen or mute button, the matching fake switches itself off
+- If you're really deafened and tick **Fake Deafen**, the real deafen is turned off and swapped for the fake one, so you can hear again but still look deafened
 - **Keep my microphone muted** setting (on by default): while you fake deafen, your mic is really muted so you can only listen. Unmuting ends the fake deafen. Fake Mute is locked while this is on, since your mic is already really muted. Turn the setting off if you want to keep talking while you look deafened
 - Your mic is given back when you stop, even if Discord was restarted in between
 
